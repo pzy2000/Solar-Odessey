@@ -181,7 +181,7 @@ export function startEarthDemo(container: HTMLElement, hud: HTMLElement): Odysse
   const patch = new GroundPatch(patchShaderMat);
   scene.add(patch.mesh);
 
-  const camera = new THREE.PerspectiveCamera(FOV, 1, NEAR, FAR);
+  const camera = new THREE.PerspectiveCamera(FOV, window.innerWidth / window.innerHeight, NEAR, FAR);
 
   // ---- 相机状态（double）----
   let az = 0.6;
