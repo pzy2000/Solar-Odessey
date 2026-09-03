@@ -16,6 +16,7 @@ import starData from "../ephemeris/data/stars.json";
 import { Ship, propagateShip, shipHelio, bodyStateKm, attitudeDir, type Attitude } from "../physics/ship.js";
 import { elementsFromState, propagate, lambert, norm, sub } from "../physics/kepler.js";
 import { makeCoronaSprites, makeFlare, makeSaturnRing, injectRingShadowOnPlanet, makeBelts, type FlareHandle } from "./m4.js";
+import { attachAtmosphere, ATMOSPHERES, type AtmosphereHandle } from "./atmosphere.js";
 
 const DEG = Math.PI / 180;
 const STAR_R = 8e12;
@@ -93,6 +94,8 @@ function makeMilkyWay(): THREE.Mesh {
     new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, depthWrite: false }),
   );
 }
+
+const atmospheres: Array<{ name: string; h: AtmosphereHandle }> = [];
 
 interface BodyRender {
   def: BodyDef;
@@ -179,6 +182,10 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       "text-shadow:0 0 4px #000;pointer-events:none;transform:translate(-50%,-140%);white-space:nowrap;";
     container.appendChild(label);
     bodyRenders.push({ def, mesh, label });
+    // M5：大气壳层
+    if (ATMOSPHERES[def.name]) {
+      atmospheres.push({ name: def.name, h: attachAtmosphere(mesh, def.radiusM, ATMOSPHERES[def.name]) });
+    }
     // M4：土星环（含行星本影注入）+ 土星材质注入环影
     if (def.name === "saturn") {
       const RING_IN = 7.45e7, RING_OUT = 1.368e8; // C 环内缘 ~ A 环外缘（m）
@@ -487,6 +494,14 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
         array[i * 3 + 2] = ol.base[i * 3 + 2] + (parentPos.z - cam.z);
       }
       arr.needsUpdate = true;
+    }
+
+    // M5：大气太阳方向
+    for (const a of atmospheres) {
+      const p = bodyPosHelioM(a.name, jd);
+      const dx = -cam.x - p.x, dy = -cam.y - p.y, dz = -cam.z - p.z;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      a.h.update({ x: dx / dl, y: dy / dl, z: dz / dl });
     }
 
     // 飞船标记与轨道线（M3 飞行模式）
