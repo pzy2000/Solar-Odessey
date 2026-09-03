@@ -12,7 +12,10 @@
     "fetch:textures": "node tools/fetch_textures.mjs",
     "verify:horizons": "vitest run --config vitest.verify.config.ts",
     "verify:truth": "vitest run --config vitest.verify.config.ts verify/truth.verify.test.ts",
-    "fetch:ephemeris": "node tools/fetch_ephemeris.mjs"
+    "fetch:ephemeris": "node tools/fetch_ephemeris.mjs",
+    "verify:satellites": "vitest run --config vitest.verify.config.ts verify/satellites.verify.test.ts",
+    "fetch:satellites": "node tools/fetch_satellites.mjs",
+    "fetch:stars": "node tools/fetch_stars.mjs"
   },
   "dependencies": {
     "astronomy-engine": "^2.1.19",
@@ -20,6 +23,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@types/node": "^26.4.1",
     "@types/three": "^0.182.0",
     "eslint": "^9.39.0",
     "prettier": "^3.6.0",

@@ -21,6 +21,7 @@ export default tseslint.config(
         process: "readonly",
         setTimeout: "readonly",
         Buffer: "readonly",
+        URLSearchParams: "readonly",
       },
     },
     rules: {
