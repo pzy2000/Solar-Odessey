@@ -15,6 +15,7 @@ import { jdTT as toTT } from "../core/time.js";
 import starData from "../ephemeris/data/stars.json";
 import { Ship, propagateShip, shipHelio, bodyStateKm, attitudeDir, type Attitude } from "../physics/ship.js";
 import { elementsFromState, propagate, lambert, norm, sub } from "../physics/kepler.js";
+import { makeCoronaSprites, makeFlare, makeSaturnRing, injectRingShadowOnPlanet, makeBelts, type FlareHandle } from "./m4.js";
 
 const DEG = Math.PI / 180;
 const STAR_R = 8e12;
@@ -80,7 +81,6 @@ function makeStarField(): THREE.Points {
     transparent: true,
     depthWrite: false,
     vertexColors: true,
-    blending: THREE.AdditiveBlending,
   }));
 }
 
@@ -92,24 +92,6 @@ function makeMilkyWay(): THREE.Mesh {
     new THREE.SphereGeometry(STAR_R * 1.1, 48, 24),
     new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, depthWrite: false }),
   );
-}
-
-function makeSunSprite(): THREE.Sprite {
-  const c = document.createElement("canvas");
-  c.width = c.height = 128;
-  const ctx = c.getContext("2d")!;
-  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-  g.addColorStop(0, "rgba(255,250,235,1)");
-  g.addColorStop(0.22, "rgba(255,235,190,0.95)");
-  g.addColorStop(0.4, "rgba(255,190,110,0.35)");
-  g.addColorStop(1, "rgba(255,170,80,0)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 128, 128);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthWrite: false, transparent: true }));
-  s.scale.setScalar(2.6e9);
-  return s;
 }
 
 interface BodyRender {
@@ -127,9 +109,22 @@ export interface M2Hooks {
   bodyScreen(name: string): { x: number; y: number; visible: boolean };
   targets(): string[];
   debug(): Record<string, unknown>;
+  hide(name: string): void;
+  /** 把相机摆到"从地球看目标"的真实几何（相位/视角与地球所见一致）。 */
+  viewFromEarth(): void;
 }
 
 export function startSolarScene(container: HTMLElement, _hud: HTMLElement, flight = false): M2Hooks {
+  const consoleErrors: string[] = [];
+  const origError = console.error.bind(console);
+  console.error = (...args: unknown[]) => {
+    if (consoleErrors.length < 10) consoleErrors.push(args.map(String).join(" ").slice(0, 300));
+    origError(...args);
+  };
+  // ---- M4 光斑与阴影句柄（在体渲染构建前声明） ----
+  let saturnShadow: { update(cam: { x: number; y: number; z: number }, jd: number): void } | null = null;
+  let flare: FlareHandle | null = null;
+
   const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -138,7 +133,17 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
   const scene = new THREE.Scene();
   scene.add(makeStarField());
   scene.add(makeMilkyWay());
-  scene.add(makeSunSprite());
+  // makeSunSprite 的 CanvasTexture 在访客环境上传异常渲染为黑盘，已由 M4 日冕叠加替代
+
+  // ---- M4：太阳表面（米粒组织）+ 日冕 + 原点锚定物集合 ----
+  const originAnchored: THREE.Object3D[] = [];
+  // 太阳视觉 = 日冕 sprite 叠加（黑球伪影规避，见 ADR-001 M4 注记）
+  originAnchored.push(...makeCoronaSprites());
+  for (const o of originAnchored) scene.add(o);
+  const { belt, kuiper } = makeBelts();
+  scene.add(belt);
+  scene.add(kuiper);
+  originAnchored.push(belt, kuiper);
 
   // 太阳平行光（方向每帧更新）+ 微弱环境光
   const sunLight = new THREE.DirectionalLight(0xfff2dd, 3.0);
@@ -151,7 +156,10 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
   for (const def of BODIES) {
     const seg = def.radiusM > 2e6 ? 96 : 48;
     let material: THREE.Material;
-    if (def.texture) {
+    if (def.name === "sun") {
+      // 太阳本体是光源：不受平行光照（否则永远背光呈黑色），用自发光式 Basic
+      material = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xfff3c0) });
+    } else if (def.texture) {
       material = new THREE.MeshLambertMaterial({
         map: loader.load(def.texture, (t) => {
           t.colorSpace = THREE.SRGBColorSpace;
@@ -171,10 +179,30 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       "text-shadow:0 0 4px #000;pointer-events:none;transform:translate(-50%,-140%);white-space:nowrap;";
     container.appendChild(label);
     bodyRenders.push({ def, mesh, label });
+    // M4：土星环（含行星本影注入）+ 土星材质注入环影
+    if (def.name === "saturn") {
+      const RING_IN = 7.45e7, RING_OUT = 1.368e8; // C 环内缘 ~ A 环外缘（m）
+      const ring = makeSaturnRing(RING_IN, RING_OUT, "textures/planets/saturn_ring_alpha.png", def.radiusM);
+      mesh.add(ring);
+      const ringU = (ring as unknown as { __uShadow: { uPlanetRel: { value: THREE.Vector3 }; uSunRel: { value: THREE.Vector3 }; uPlanetR: { value: number } } }).__uShadow;
+      const planetU = injectRingShadowOnPlanet(mesh.material as THREE.Material, RING_IN, RING_OUT);
+      saturnShadow = {
+        update(cam: { x: number; y: number; z: number }, jd: number) {
+          const p = bodyPosHelioM("saturn", jd);
+          ringU.uPlanetRel.value.set(p.x - cam.x, p.y - cam.y, p.z - cam.z);
+          ringU.uSunRel.value.set(-cam.x, -cam.y, -cam.z);
+          planetU.uPlanetRel.value.set(p.x - cam.x, p.y - cam.y, p.z - cam.z);
+          planetU.uSunRel.value.set(-cam.x, -cam.y, -cam.z);
+          // 环面法向 = 土星北极（自转四元数作用于 +Y）
+          const nrm = new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.quaternion);
+          planetU.uRingNormal.value.copy(nrm);
+        },
+      };
+    }
   }
 
   // ---- 卫星轨道环 ----
-  const orbitLines: Array<{ line: THREE.Line; parent: string }> = [];
+  const orbitLines: Array<{ line: THREE.Line; parent: string; base: Float32Array }> = [];
   {
     const mat = new THREE.LineBasicMaterial({ color: 0x4a6f9f, transparent: true, opacity: 0.35 });
     for (const [key, el] of Object.entries(MOONS)) {
@@ -195,7 +223,7 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       line.visible = false;
       line.frustumCulled = false;
       scene.add(line);
-      orbitLines.push({ line, parent: el.parent });
+      orbitLines.push({ line, parent: el.parent, base: pos.slice() });
     }
   }
 
@@ -421,6 +449,13 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
     sunLight.target.position.set(0, 0, 0);
     sunLight.target.updateMatrixWorld();
 
+    // M4：原点锚定物（日冕/带）跟随相机相对原点；公告牌朝向相机
+    for (const o of originAnchored) {
+      o.position.set(-cam.x, -cam.y, -cam.z);
+      if (o.userData.billboard) o.quaternion.copy(camera.quaternion);
+    }
+    if (saturnShadow) saturnShadow.update(cam, jd);
+
     // 视图基向量
     let fx = -off.x, fy = -off.y, fz = -off.z;
     const fl = Math.hypot(fx, fy, fz);
@@ -438,7 +473,7 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
     );
     camera.updateMatrixWorld();
 
-    // 卫星轨道环
+    // 卫星轨道环（基准顶点 + 每帧相机相对平移，避免累加漂移）
     for (const ol of orbitLines) {
       const parentPos = bodyPosHelioM(ol.parent, jd);
       const dParent = Math.hypot(parentPos.x - cam.x, parentPos.y - cam.y, parentPos.z - cam.z);
@@ -447,9 +482,9 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       const arr = ol.line.geometry.getAttribute("position") as THREE.BufferAttribute;
       const array = arr.array as Float32Array;
       for (let i = 0; i < arr.count; i++) {
-        array[i * 3] = array[i * 3] + (parentPos.x - cam.x);
-        array[i * 3 + 1] = array[i * 3 + 1] + (parentPos.y - cam.y);
-        array[i * 3 + 2] = array[i * 3 + 2] + (parentPos.z - cam.z);
+        array[i * 3] = ol.base[i * 3] + (parentPos.x - cam.x);
+        array[i * 3 + 1] = ol.base[i * 3 + 1] + (parentPos.y - cam.y);
+        array[i * 3 + 2] = ol.base[i * 3 + 2] + (parentPos.z - cam.z);
       }
       arr.needsUpdate = true;
     }
@@ -579,6 +614,11 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
 
     if (flight) initFlight();
 
+    if (flight) initFlight();
+
+    // M4 遮挡感知光斑
+    flare = makeFlare(container);
+
     // ---- 帧循环 ----
   let fpsEma = 60;
   let lastT = performance.now();
@@ -601,6 +641,7 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       updateBodies();
       renderer.render(scene, camera);
       updateLabels();
+      if (flare) flare.update(lastCam, camera, warp.jd);
 
       const camDist = Math.pow(10, logDist);
       const b = BODIES.find((x) => x.name === targetName)!;
@@ -634,9 +675,32 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       return { visible: br.label.style.display !== "none", x: parseFloat(br.label.style.left), y: parseFloat(br.label.style.top) };
     },
     targets: () => BODIES.map((b) => b.name),
+    viewFromEarth() {
+      const p = bodyPosHelioM(targetName, warp.jd);
+      const e = bodyPosHelioM("earth", warp.jd);
+      const d = { x: e.x - p.x, y: e.y - p.y, z: e.z - p.z };
+      const dl = Math.hypot(d.x, d.y, d.z) || 1;
+      az = Math.atan2(d.z / dl, d.x / dl);
+      pol = Math.acos(Math.max(-1, Math.min(1, d.y / dl)));
+      logDist = clampLogDist(Math.log10(dl * 1.05), 3, 12.7);
+    },
+    hide(name: string) {
+      const map: Record<string, THREE.Object3D | undefined> = {
+        belt, kuiper,
+        stars: scene.children.find((c) => (c as THREE.Points).isPoints),
+        milkyway: scene.children.find((c) => c instanceof THREE.Mesh && (c as THREE.Mesh).material instanceof THREE.MeshBasicMaterial),
+        corona: originAnchored.find((o) => o instanceof THREE.Mesh),
+        corona2: originAnchored.filter((o) => o instanceof THREE.Mesh)[1],
+      };
+      const obj = map[name];
+      if (obj) obj.visible = false;
+    },
     debug: () => ({
       info: { calls: renderer.info.render.calls, tris: renderer.info.render.triangles },
       bodies: BODIES.length,
+      flareOcclusion: flare ? flare.occlusion() : 1,
+      flareBlocker: flare ? flare.blocker() : null,
+      consoleErrors,
     }),
   };
   (window as unknown as Record<string, unknown>).__odysseyM2 = hooks;
