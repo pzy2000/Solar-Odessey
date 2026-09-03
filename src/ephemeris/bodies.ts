@@ -20,6 +20,33 @@ export interface BodyDef {
   color: string; // 无纹理时的基色（小卫星）
   rotation: RotationElements;
   moon?: MoonElements;
+  gmKm3S2: number; // 引力参数 GM（km³/s²）
+}
+
+/** 引力参数 GM（km³/s²，IAU/NASA fact sheets）。 */
+export const GM: Record<string, number> = {
+  sun: 1.32712440018e11,
+  mercury: 22031.8685,
+  venus: 324858.592,
+  earth: 398600.4354,
+  mars: 42828.3752,
+  jupiter: 1.26686534e8,
+  saturn: 3.7931187e7,
+  uranus: 5.793939e6,
+  neptune: 6.836529e6,
+  pluto: 975.5,
+  moon: 4902.8001,
+  io: 5959.916, europa: 3202.739, ganymede: 9887.834, callisto: 7179.289,
+  titan: 8978.1382, triton: 1427.6,
+};
+
+/** 影响球半径（km）：r_SOI = a·(m/M)^(2/5)，a 取当前日心距的近似。 */
+export function soiRadiusKm(name: string, jdUTC: number): number {
+  const gmBody = GM[name];
+  if (!gmBody || name === "sun") return Infinity;
+  const p = bodyPosHelioM(name, jdUTC);
+  const rSun = Math.hypot(p.x, p.y, p.z) / 1000; // km
+  return rSun * Math.pow(gmBody / GM.sun, 0.4);
 }
 
 const DEG = Math.PI / 180;
@@ -62,6 +89,7 @@ for (const p of PLANET_DEFS) {
     texture: p.name === "earth" ? "textures/earth/blue_marble.jpg" : `textures/planets/${p.texture}.jpg`,
     color: p.color,
     rotation: ROTATION[p.name],
+    gmKm3S2: GM[p.name],
   });
 }
 // 月球（ELP）
@@ -73,6 +101,7 @@ BODIES.push({
   texture: "textures/planets/moon.jpg",
   color: MOON_COLOR,
   rotation: ROTATION.moon,
+  gmKm3S2: GM.moon,
 });
 for (const [key, el] of Object.entries(MOONS)) {
   if (key === "moon") continue;
@@ -83,8 +112,9 @@ for (const [key, el] of Object.entries(MOONS)) {
     radiusM: (el.diameterKm / 2) * 1000,
     texture: "",
     color: MOON_COLOR,
-    rotation: { alpha0: 0, delta0: 0, w0: 0, wDot: 0 }, // 小卫星自转暂用潮汐锁定补全（见下）
+    rotation: { alpha0: 0, delta0: 0, w0: 0, wDot: 0 }, // 潮汐锁定（bodyRotation 补全）
     moon: el,
+    gmKm3S2: GM[key] ?? 1,
   });
 }
 

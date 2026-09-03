@@ -12,9 +12,9 @@ if (mode === "m1") {
   hud.style.fontSize = "12px";
   const hooks = startM1Demo(app, hud);
   (window as unknown as Record<string, unknown>).__odysseyM1 = hooks;
-} else if (mode === "m2") {
+} else if (mode === "m2" || mode === "m3") {
   hud.style.display = "none";
-  const hooks = startSolarScene(app, hud);
+  const hooks = startSolarScene(app, hud, mode === "m3");
   (window as unknown as Record<string, unknown>).__odysseyM2 = hooks;
 } else {
   startEarthDemo(app, hud);

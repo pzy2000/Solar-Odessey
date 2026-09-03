@@ -8,16 +8,15 @@
 import * as THREE from "three";
 import { formatUTC, TimeWarp, WARP_RATES } from "../core/time.js";
 import { clampLogDist } from "../core/cameraZoom.js";
-import { BODIES, bodyPosHelioM, bodyRotation, poleEcl, type BodyDef } from "../ephemeris/bodies.js";
+import { BODIES, bodyPosHelioM, bodyRotation, poleEcl, GM, type BodyDef } from "../ephemeris/bodies.js";
 import { lightTimeMin, distanceKm, type BodyName } from "../ephemeris/ephemeris.js";
 import { MOONS } from "../ephemeris/satellites.js";
 import { jdTT as toTT } from "../core/time.js";
 import starData from "../ephemeris/data/stars.json";
+import { Ship, propagateShip, shipHelio, bodyStateKm, attitudeDir, type Attitude } from "../physics/ship.js";
+import { elementsFromState, propagate, lambert, norm, sub } from "../physics/kepler.js";
 
 const DEG = Math.PI / 180;
-const NEAR = 0.1;
-const FAR = 1e13;
-const FOV = 50;
 const STAR_R = 8e12;
 const EPS0 = 23.439279444444445 * DEG;
 
@@ -130,7 +129,7 @@ export interface M2Hooks {
   debug(): Record<string, unknown>;
 }
 
-export function startSolarScene(container: HTMLElement, _hud: HTMLElement): M2Hooks {
+export function startSolarScene(container: HTMLElement, _hud: HTMLElement, flight = false): M2Hooks {
   const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -208,7 +207,183 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement): M2Ho
   const warp = new TimeWarp(Date.now() / 86400000 + 2440587.5);
   warp.paused = false;
 
-  const camera = new THREE.PerspectiveCamera(FOV, window.innerWidth / window.innerHeight, NEAR, FAR);
+  // ---- 飞行模式（M3）：飞船、轨道线、点火控制、porkchop ----
+  const GM_EARTH_KM = 398600.4354;
+  let ship: Ship | null = null;
+  let shipOrbit: THREE.Line | null = null;
+  let shipMarker: THREE.Mesh | null = null;
+  const shipLabel = document.createElement("div");
+  const flightPanel = document.createElement("div");
+
+  function refreshOrbitLine(): void {
+    if (!ship || !shipOrbit) return;
+    const els = elementsFromState(ship.state.rel, GM_EARTH_KM);
+    const N = 64;
+    const arr = (shipOrbit.geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
+    if (els.e >= 0.98) {
+      shipOrbit.visible = false;
+      return;
+    }
+    shipOrbit.visible = true;
+    const T = 2 * Math.PI * Math.sqrt(Math.pow(els.a, 3) / GM_EARTH_KM);
+    for (let i = 0; i <= N; i++) {
+      const st = propagate(ship.state.rel, (i / N) * T, GM_EARTH_KM);
+      arr[i * 3] = st.r.x * 1000;
+      arr[i * 3 + 1] = st.r.y * 1000;
+      arr[i * 3 + 2] = st.r.z * 1000;
+    }
+    (shipOrbit.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+  }
+
+  function drawPorkchop(): void {
+    if (!ship) return;
+    const c = flightPanel.querySelector("#f-pork") as HTMLCanvasElement | null;
+    const info = flightPanel.querySelector("#f-porkinfo") as HTMLElement | null;
+    if (!c || !info) return;
+    const ctx = c.getContext("2d")!;
+    const W = c.width, H = c.height;
+    const Ndep = 60, Ntof = 36;
+    const dep0 = warp.jd, depStep = 5, tof0 = 120, tofStep = 8;
+    const img = ctx.createImageData(W, H);
+    let minV = Infinity;
+    let best = { i: 0, j: 0 };
+    const grid: number[][] = [];
+    for (let i = 0; i < Ndep; i++) {
+      grid.push([]);
+      for (let j = 0; j < Ntof; j++) grid[i].push(Infinity);
+    }
+    for (let i = 0; i < Ndep; i++) {
+      const jd = dep0 + i * depStep;
+      const rE = bodyStateKm("earth", jd);
+      for (let j = 0; j < Ntof; j++) {
+        const tof = tof0 + j * tofStep;
+        const rM = bodyStateKm("mars", jd + tof);
+        try {
+          const { v1 } = lambert(rE.r, rM.r, tof * 86400, GM.sun);
+          const vInf = norm(sub(v1, rE.v));
+          grid[i][j] = vInf;
+          if (vInf < minV) {
+            minV = vInf;
+            best = { i, j };
+          }
+        } catch {
+          grid[i][j] = Infinity;
+        }
+      }
+    }
+    for (let px = 0; px < W; px++) {
+      for (let py = 0; py < H; py++) {
+        const i = Math.min(Ndep - 1, Math.floor((px / W) * Ndep));
+        const j = Math.min(Ntof - 1, Math.floor((1 - py / H) * Ntof));
+        const v = grid[i][j];
+        const t = Math.max(0, Math.min(1, (v - 2.4) / 6));
+        const o = (py * W + px) * 4;
+        img.data[o] = 30 + t * 225;
+        img.data[o + 1] = 40 + (1 - t) * 180;
+        img.data[o + 2] = 60 + (1 - t) * 90;
+        img.data[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    // 标注最小点
+    const bx = ((best.i + 0.5) / Ndep) * W;
+    const by = (1 - (best.j + 0.5) / Ntof) * H;
+    ctx.strokeStyle = "#ffe08a";
+    ctx.beginPath();
+    ctx.arc(bx, by, 5, 0, Math.PI * 2);
+    ctx.stroke();
+    if (info) info.textContent = `最优: 第${(best.i * depStep).toFixed(0)}天出发 / tof ${(tof0 + best.j * tofStep).toFixed(0)}天  v∞=${minV.toFixed(2)} km/s`;
+    c.onclick = (ev) => {
+      const i = Math.min(Ndep - 1, Math.floor((ev.offsetX / W) * Ndep));
+      const j = Math.min(Ntof - 1, Math.floor((1 - ev.offsetY / H) * Ntof));
+      if (info) info.textContent = `选中: +${(i * depStep).toFixed(0)}天出发 / tof ${(tof0 + j * tofStep).toFixed(0)}天  v∞=${grid[i][j] === Infinity ? "∞" : grid[i][j].toFixed(2) + " km/s"}`;
+    };
+  }
+
+  function initFlight(): void {
+    const t0 = warp.jd;
+    const eSt = bodyStateKm("earth", t0);
+    const vm = Math.hypot(eSt.v.x, eSt.v.y, eSt.v.z);
+    const vHat = { x: eSt.v.x / vm, y: eSt.v.y / vm, z: eSt.v.z / vm };
+    const rp = 6678; // km，300 km LEO
+    ship = new Ship({
+      name: "奥德赛-1",
+      dryMassT: 12, fuelT: 30, thrustKN: 80, ispS: 350,
+      state: {
+        center: "earth",
+        rel: {
+          r: { x: vHat.x * rp, y: vHat.y * rp, z: vHat.z * rp },
+          v: { x: 0, y: 0, z: Math.sqrt(GM_EARTH_KM / rp) },
+        },
+        jdUTC: t0,
+      },
+    });
+    shipMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(1200, 12, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffe08a }),
+    );
+    shipMarker.frustumCulled = false;
+    scene.add(shipMarker);
+    shipOrbit = new THREE.Line(
+      new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(65 * 3), 3)),
+      new THREE.LineBasicMaterial({ color: 0x7fe08a, transparent: true, opacity: 0.8 }),
+    );
+    shipOrbit.frustumCulled = false;
+    scene.add(shipOrbit);
+
+    shipLabel.textContent = "奥德赛-1";
+    shipLabel.style.cssText = "position:fixed;z-index:5;font:11px ui-monospace,monospace;color:#ffe08a;text-shadow:0 0 4px #000;pointer-events:none;transform:translate(-50%,-140%);";
+    container.appendChild(shipLabel);
+
+    flightPanel.style.cssText =
+      "position:fixed;left:12px;top:12px;z-index:10;font:12px/1.6 ui-monospace,monospace;color:#c9ffc9;" +
+      "background:rgba(0,20,12,0.6);padding:10px 12px;border-radius:8px;user-select:none;max-width:320px";
+    flightPanel.innerHTML = `
+      <b style="color:#c9ffc9">奥德赛-1</b>
+      <div id="f-orbit"></div>
+      <div id="f-dv"></div>
+      <div style="margin:3px 0">点火 Δv: <input id="f-dvin" value="10" style="width:52px;background:rgba(255,255,255,0.08);border:1px solid rgba(140,255,180,0.35);color:#c9ffc9;font:inherit;padding:1px 4px;border-radius:4px" /> m/s</div>
+      <div style="display:flex;gap:4px;margin:4px 0;flex-wrap:wrap">
+        <button data-f="prograde">顺行+</button><button data-f="retrograde">逆行−</button>
+        <button data-f="normal">法向+</button><button data-f="radialOut">径向+</button>
+      </div>
+      <b style="color:#c9ffc9">地球→火星 porkchop</b> (Δv 热图)
+      <div><canvas id="f-pork" width="300" height="180" style="border:1px solid rgba(140,255,180,0.3);border-radius:4px;cursor:crosshair;margin-top:4px"></canvas></div>
+      <div id="f-porkinfo" style="min-height:16px"></div>
+    `;
+    container.appendChild(flightPanel);
+    flightPanel.querySelectorAll("button").forEach((b) => {
+      b.style.cssText = "background:rgba(120,255,180,0.12);color:#c9ffc9;border:1px solid rgba(140,255,180,0.35);border-radius:4px;cursor:pointer;font:inherit;padding:2px 6px";
+      b.addEventListener("click", () => {
+        const act = (b as HTMLElement).dataset.f as Attitude | undefined;
+        if (!act || !ship) return;
+        const dvInput = flightPanel.querySelector("#f-dvin") as HTMLInputElement;
+        const dv = parseFloat(dvInput.value) || 10;
+        ship.burn(dv, attitudeDir(ship.state, act));
+        refreshOrbitLine();
+        updateFlightPanel();
+      });
+    });
+
+    drawPorkchop();
+    refreshOrbitLine();
+    updateFlightPanel();
+  }
+
+  function updateFlightPanel(): void {
+    if (!ship) return;
+    const orb = flightPanel.querySelector("#f-orbit");
+    const dv = flightPanel.querySelector("#f-dv");
+    if (orb && dv) {
+      const els = elementsFromState(ship.state.rel, GM_EARTH_KM);
+      const alt = norm(ship.state.rel.r) - 6371;
+      orb.textContent = `高度 ${alt.toFixed(0)} km  a=${els.a.toFixed(0)} km  e=${els.e.toFixed(4)}`;
+      dv.textContent = `Δv 预算: ${ship.dvBudgetMS().toFixed(0)} m/s  燃料 ${ship.fuelT.toFixed(1)} t`;
+    }
+  }
+
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1e13);
+
   const lastCam = { x: 0, y: 0, z: 0 };
 
   function targetPos(jd: number): { x: number; y: number; z: number } {
@@ -278,6 +453,15 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement): M2Ho
       }
       arr.needsUpdate = true;
     }
+
+    // 飞船标记与轨道线（M3 飞行模式）
+    if (flight && ship && shipMarker && shipOrbit) {
+      const sh = shipHelio(ship.state);
+      shipMarker.position.set(sh.r.x / 1000 - cam.x, sh.r.y / 1000 - cam.y, sh.r.z / 1000 - cam.z);
+      const ePos = bodyPosHelioM("earth", jd);
+      shipOrbit.position.set(ePos.x - cam.x, ePos.y - cam.y, ePos.z - cam.z);
+      shipOrbit.visible = Math.hypot(ePos.x - cam.x, ePos.y - cam.y, ePos.z - cam.z) < 6e10;
+    }
   }
 
   // ---- 标签投影 ----
@@ -285,19 +469,25 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement): M2Ho
   const projMat = new THREE.Matrix4();
   function updateLabels(): void {
     projMat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    for (const br of bodyRenders) {
-      const p = bodyPosHelioM(br.def.name, warp.jd);
+    const project = (p: { x: number; y: number; z: number }, el: HTMLElement, hot: boolean): void => {
       projV.set(p.x - lastCam.x, p.y - lastCam.y, p.z - lastCam.z, 1).applyMatrix4(projMat);
       const behind = projV.w < 0;
       const sx = (projV.x / projV.w) * 0.5 + 0.5;
       const sy = 1 - ((projV.y / projV.w) * 0.5 + 0.5);
       const vis = !behind && sx > -0.03 && sx < 1.03 && sy > -0.03 && sy < 1.03;
-      br.label.style.display = vis ? "block" : "none";
+      el.style.display = vis ? "block" : "none";
       if (vis) {
-        br.label.style.left = `${sx * window.innerWidth}px`;
-        br.label.style.top = `${sy * window.innerHeight}px`;
-        br.label.style.color = br.def.name === targetName ? "rgba(255,230,150,1)" : "rgba(190,225,255,0.85)";
+        el.style.left = `${sx * window.innerWidth}px`;
+        el.style.top = `${sy * window.innerHeight}px`;
+        el.style.color = hot ? "rgba(255,230,150,1)" : "rgba(190,225,255,0.85)";
       }
+    };
+    for (const br of bodyRenders) {
+      project(bodyPosHelioM(br.def.name, warp.jd), br.label, br.def.name === targetName);
+    }
+    if (flight && ship) {
+      const sh = shipHelio(ship.state);
+      project({ x: sh.r.x * 1000, y: sh.r.y * 1000, z: sh.r.z * 1000 }, shipLabel, true);
     }
   }
 
@@ -387,7 +577,9 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement): M2Ho
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  // ---- 帧循环 ----
+    if (flight) initFlight();
+
+    // ---- 帧循环 ----
   let fpsEma = 60;
   let lastT = performance.now();
   const testMode = new URLSearchParams(window.location.search).has("test");
@@ -398,7 +590,13 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement): M2Ho
       const dt = Math.min(0.25, (t - lastT) / 1000);
       lastT = t;
       fpsEma = fpsEma * 0.92 + (1 / dt) * 0.08;
-      warp.advance(dt);
+      const simDt = warp.advance(dt);
+      // 飞船随时间加速推进（SOI 切换按小时步长解析检测）
+      if (flight && ship && simDt !== 0) {
+        const simDtSec = simDt * 86400;
+        ship.state = propagateShip(ship.state, simDtSec, Math.min(64, Math.max(1, Math.ceil(Math.abs(simDtSec) / 1800))));
+        updateFlightPanel();
+      }
 
       updateBodies();
       renderer.render(scene, camera);
