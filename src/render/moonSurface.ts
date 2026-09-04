@@ -115,7 +115,7 @@ export function startMoonSurface(container: HTMLElement, hud: HTMLElement): M6Ho
     if (!testMode) requestAnimationFrame(frame);
     try {
       updateCamera();
-      if (earthPivot.visible || true) {
+      {
         // 地球方向（真实星历）：以月面相机为原点
         // 月球地心矢量取负 = 月→地方向（geoJ2000('moon') = 月球相对地球，AU）
         // 潮汐锁定：地球恒在本初子午线方向（本体固定 +X̂），距离 = 地月距

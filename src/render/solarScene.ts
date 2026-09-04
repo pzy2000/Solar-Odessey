@@ -15,6 +15,8 @@ import { jdTT as toTT } from "../core/time.js";
 import starData from "../ephemeris/data/stars.json";
 import { Ship, propagateShip, shipHelio, bodyStateKm, attitudeDir, type Attitude } from "../physics/ship.js";
 import { elementsFromState, propagate, lambert, norm, sub } from "../physics/kepler.js";
+import { WarpDrive } from "../physics/warp.js";
+import { buildTunnelLines } from "./relativistic.js";
 import { makeCoronaSprites, makeFlare, makeSaturnRing, injectRingShadowOnPlanet, makeBelts, type FlareHandle } from "./m4.js";
 import { attachAtmosphere, ATMOSPHERES, type AtmosphereHandle } from "./atmosphere.js";
 
@@ -113,6 +115,8 @@ export interface M2Hooks {
   targets(): string[];
   debug(): Record<string, unknown>;
   hide(name: string): void;
+  warpEngage(dir?: { x: number; y: number; z: number }): boolean;
+  shipToDeepSpace(): void;
   /** 把相机摆到"从地球看目标"的真实几何（相位/视角与地球所见一致）。 */
   viewFromEarth(): void;
 }
@@ -247,6 +251,8 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
   let ship: Ship | null = null;
   let shipOrbit: THREE.Line | null = null;
   let shipMarker: THREE.Mesh | null = null;
+  let warpDrive: WarpDrive | null = null;
+  let tunnel: THREE.LineSegments | null = null;
   const shipLabel = document.createElement("div");
   const flightPanel = document.createElement("div");
 
@@ -365,6 +371,18 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
     );
     shipOrbit.frustumCulled = false;
     scene.add(shipOrbit);
+    warpDrive = new WarpDrive({ dominantBodyFn: () => ship!.state.center, chargeSec: 3 });
+    // M7 星流隧道：线段源自真实 Hipparcos 恒星
+    const tGeo = new THREE.BufferGeometry();
+    tGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(2000 * 6), 3));
+    tGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(2000 * 6), 3));
+    tunnel = new THREE.LineSegments(
+      tGeo,
+      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false }),
+    );
+    tunnel.visible = false;
+    tunnel.frustumCulled = false;
+    scene.add(tunnel);
 
     shipLabel.textContent = "奥德赛-1";
     shipLabel.style.cssText = "position:fixed;z-index:5;font:11px ui-monospace,monospace;color:#ffe08a;text-shadow:0 0 4px #000;pointer-events:none;transform:translate(-50%,-140%);";
@@ -385,10 +403,42 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       <b style="color:#c9ffc9">地球→火星 porkchop</b> (Δv 热图)
       <div><canvas id="f-pork" width="300" height="180" style="border:1px solid rgba(140,255,180,0.3);border-radius:4px;cursor:crosshair;margin-top:4px"></canvas></div>
       <div id="f-porkinfo" style="min-height:16px"></div>
+      <b style="color:#c9ffc9">曲速引擎 (M7)</b>
+      <div id="f-warp">状态: 待命</div>
+      <div>节流阀: <input id="f-throttle" type="range" min="0.1" max="100" step="0.1" value="1" style="width:140px" /> <span id="f-thv">1.0c</span></div>
+      <div style="display:flex;gap:4px;margin:4px 0">
+        <button data-w="engage">点火</button><button data-w="disengage">熄火</button>
+      </div>
     `;
     container.appendChild(flightPanel);
     flightPanel.querySelectorAll("button").forEach((b) => {
       b.style.cssText = "background:rgba(120,255,180,0.12);color:#c9ffc9;border:1px solid rgba(140,255,180,0.35);border-radius:4px;cursor:pointer;font:inherit;padding:2px 6px";
+      const engageBtn = flightPanel.querySelector('[data-w="engage"]') as HTMLButtonElement;
+      const disengageBtn = flightPanel.querySelector('[data-w="disengage"]') as HTMLButtonElement;
+      const throttle = flightPanel.querySelector("#f-throttle") as HTMLInputElement;
+      const thv = flightPanel.querySelector("#f-thv") as HTMLElement;
+      const warpStatus = flightPanel.querySelector("#f-warp") as HTMLElement;
+      engageBtn.style.cssText = "background:rgba(140,255,180,0.15);color:#c9ffc9;border:1px solid rgba(140,255,180,0.35);border-radius:4px;cursor:pointer;font:inherit;padding:2px 6px";
+      disengageBtn.style.cssText = engageBtn.style.cssText;
+      engageBtn.addEventListener("click", () => {
+        if (!ship || !warpDrive) return;
+        const dir = attitudeDir(ship.state, "prograde");
+        const ok = warpDrive.engage(dir);
+        if (!ok) warpStatus.textContent = "状态: 点火被拒（行星 SOI 内禁止）";
+        updateWarpUI();
+      });
+      disengageBtn.addEventListener("click", () => warpDrive?.disengage());
+      throttle.addEventListener("input", () => {
+        if (warpDrive) warpDrive.throttleC = parseFloat(throttle.value);
+        thv.textContent = `${warpDrive?.throttleC.toFixed(1)}c`;
+      });
+      function updateWarpUI(): void {
+        if (!warpDrive) return;
+        if (warpDrive.phase === "ENGAGED") warpStatus.textContent = `状态: ENGAGED  β=${Math.min(warpDrive.throttleC, 0.99).toFixed(2)}  ${warpDrive.throttleC.toFixed(1)}c`;
+        else if (warpDrive.phase === "CHARGING") warpStatus.textContent = `状态: 充能中 ${warpDrive.chargeLeft.toFixed(1)}s`;
+        else warpStatus.textContent = "状态: 待命";
+      }
+      window.setInterval(() => updateWarpUI(), 250);
       b.addEventListener("click", () => {
         const act = (b as HTMLElement).dataset.f as Attitude | undefined;
         if (!act || !ship) return;
@@ -422,6 +472,11 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
   const lastCam = { x: 0, y: 0, z: 0 };
 
   function targetPos(jd: number): { x: number; y: number; z: number } {
+    // 飞行模式：相机跟随飞船（日心系，米）
+    if (flight && ship) {
+      const h = shipHelio(ship.state);
+      return { x: h.r.x * 1000, y: h.r.y * 1000, z: h.r.z * 1000 };
+    }
     return bodyPosHelioM(targetName, jd);
   }
 
@@ -629,7 +684,39 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
 
     if (flight) initFlight();
 
+    // M7 调试：K 键传送飞船到 5 AU 深空（曲速演示用）
+    window.addEventListener("keydown", (e) => {
+      if (flight && ship && (e.key === "k" || e.key === "K")) {
+        const d5 = 5 * 1.495978707e8; // km
+        const th = 0.9;
+        ship.state = {
+          center: "sun",
+          rel: {
+            r: { x: d5 * Math.cos(th), y: d5 * Math.sin(th), z: 0 },
+            v: { x: -8, y: 14, z: 0 },
+          },
+          jdUTC: warp.jd,
+        };
+      }
+    });
+
     if (flight) initFlight();
+
+    // M7 调试：K 键传送飞船到 5 AU 深空（曲速演示用）
+    window.addEventListener("keydown", (e) => {
+      if (flight && ship && (e.key === "k" || e.key === "K")) {
+        const d5 = 5 * 1.495978707e8; // km
+        const th = 0.9;
+        ship.state = {
+          center: "sun",
+          rel: {
+            r: { x: d5 * Math.cos(th), y: d5 * Math.sin(th), z: 0 },
+            v: { x: -8, y: 14, z: 0 },
+          },
+          jdUTC: warp.jd,
+        };
+      }
+    });
 
     // M4 遮挡感知光斑
     flare = makeFlare(container);
@@ -648,9 +735,40 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       const simDt = warp.advance(dt);
       // 飞船随时间加速推进（SOI 切换按小时步长解析检测）
       if (flight && ship && simDt !== 0) {
-        const simDtSec = simDt * 86400;
-        ship.state = propagateShip(ship.state, simDtSec, Math.min(64, Math.max(1, Math.ceil(Math.abs(simDtSec) / 1800))));
+        if (warpDrive && warpDrive.phase === "ENGAGED") {
+          // 曲速：直接位移日心位置（脱离 patched conics，见 ADR/PLAN M7）
+          const disp = warpDrive.tick(simDt * 86400);
+          const c = bodyStateKm("sun", warp.jd);
+          const helio = shipHelio(ship.state);
+          const nh = {
+            r: { x: helio.r.x + disp.x, y: helio.r.y + disp.y, z: helio.r.z + disp.z },
+            v: helio.v,
+          };
+          ship.state = { center: "sun", rel: nh, jdUTC: warp.jd };
+          void c;
+        } else {
+          if (warpDrive) warpDrive.tick(simDt * 86400);
+          const simDtSec = simDt * 86400;
+          ship.state = propagateShip(ship.state, simDtSec, Math.min(64, Math.max(1, Math.ceil(Math.abs(simDtSec) / 1800))));
+        }
         updateFlightPanel();
+      }
+      // 隧道显隐与朝向（ENGAGED 时可见，指向点火方向）
+      if (tunnel && warpDrive) {
+        tunnel.visible = warpDrive.phase === "ENGAGED";
+        if (tunnel.visible) {
+          // 相机置于运动方向后方，沿速度方向前视（隧道在正前方）
+          az = Math.atan2(-warpDrive.dir.z, -warpDrive.dir.x);
+          pol = Math.acos(Math.max(-1, Math.min(1, -warpDrive.dir.y)));
+        }
+        if (tunnel.visible) {
+          const segs = buildTunnelLines(warpDrive.dir, warpDrive.throttleC,
+            (tunnel.geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array,
+            (tunnel.geometry.getAttribute("color") as THREE.BufferAttribute).array as Float32Array);
+          (tunnel.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+          (tunnel.geometry.getAttribute("color") as THREE.BufferAttribute).needsUpdate = true;
+          tunnel.geometry.setDrawRange(0, segs * 2);
+        }
       }
 
       updateBodies();
@@ -698,6 +816,23 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       az = Math.atan2(d.z / dl, d.x / dl);
       pol = Math.acos(Math.max(-1, Math.min(1, d.y / dl)));
       logDist = clampLogDist(Math.log10(dl * 1.05), 3, 12.7);
+    },
+    warpEngage(dir?: { x: number; y: number; z: number }) {
+      if (!warpDrive || !ship) return false;
+      return warpDrive.engage(dir ?? attitudeDir(ship.state, "prograde"));
+    },
+    shipToDeepSpace() {
+      if (!ship) return;
+      const d5 = 5 * 1.495978707e8;
+      const th = 0.9;
+      ship.state = {
+        center: "sun",
+        rel: {
+          r: { x: d5 * Math.cos(th), y: d5 * Math.sin(th), z: 0 },
+          v: { x: -8, y: 14, z: 0 },
+        },
+        jdUTC: warp.jd,
+      };
     },
     hide(name: string) {
       const map: Record<string, THREE.Object3D | undefined> = {
