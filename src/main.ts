@@ -2,6 +2,7 @@ import { startEarthDemo } from "./render/m0demo.js";
 import { startM1Demo } from "./ui/m1demo.js";
 import { startSolarScene } from "./render/solarScene.js";
 import { startMoonSurface } from "./render/moonSurface.js";
+import { startMissionScene } from "./render/missionScene.js";
 
 const app = document.getElementById("app");
 const hud = document.getElementById("hud");
@@ -16,6 +17,10 @@ if (mode === "m1") {
 } else if (mode === "m2" || mode === "m3") {
   hud.style.display = "none";
   const hooks = startSolarScene(app, hud, mode === "m3");
+  (window as unknown as Record<string, unknown>).__odysseyM2 = hooks;
+} else if (mode === "m8") {
+  hud.style.display = "none";
+  const hooks = startMissionScene(app, hud);
   (window as unknown as Record<string, unknown>).__odysseyM2 = hooks;
 } else if (mode === "m6") {
   hud.style.display = "none";
