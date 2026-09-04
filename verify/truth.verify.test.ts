@@ -1,6 +1,6 @@
 /**
  * M1 验收网关（主通道）：与 IMCCE Miriade/INPOP 星历服务比对。
- * JPL 服务器对本网络不可达（连接超时），INPOP 与 DE 系列同等级权威，且 IMCCE 正是 VSOP87 的发布方。
+ * JPL Horizons 2026-09 起本网络已可直连（另有 horizons 门禁）；INPOP 与 DE 系列同等级权威，且 IMCCE 正是 VSOP87 的发布方。
  * 运行：npm run verify:truth
  * 门槛（PLAN.md M1）：8 大行星误差 < 1'；月球 < 30"；冥王星（门外行星）< 10'。
  * 比对口径：地心 astrometric RA/DEC J2000（光行时校正、无光行差），与我们的 astrometricGeo 同口径。

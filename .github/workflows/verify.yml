@@ -1,0 +1,23 @@
+# 星历真值校验（JPL Horizons + IMCCE Miriade，网络依赖）。
+# 刻意不做 PR 门禁：外部 API 波动是天然 flake 来源，失败仅在本工作流标红，不阻塞合并。
+# 手动触发，或每周一 03:00 UTC 定时巡检。
+name: Verify (ephemeris truth)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  truth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # --retry=2 缓解外部 API 偶发抖动
+      - run: npx vitest run --config vitest.verify.config.ts --retry=2
