@@ -1,7 +1,7 @@
 {
   "name": "solar-odyssey",
   "private": true,
-  "version": "0.0.1",
+  "version": "1.0.0",
   "type": "module",
   "description": "太阳系奥德赛 —— 真实太阳系驾驶模拟",
   "scripts": {

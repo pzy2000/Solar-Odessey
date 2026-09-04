@@ -19,6 +19,7 @@ import { WarpDrive } from "../physics/warp.js";
 import { buildTunnelLines } from "./relativistic.js";
 import { makeCoronaSprites, makeFlare, makeSaturnRing, injectRingShadowOnPlanet, makeBelts, type FlareHandle } from "./m4.js";
 import { attachAtmosphere, ATMOSPHERES, type AtmosphereHandle } from "./atmosphere.js";
+import { makeHelpOverlay, enablePhotoMode, makeSaveLoad, makeAmbientAudio } from "../ui/polish.js";
 
 const DEG = Math.PI / 180;
 const STAR_R = 8e12;
@@ -700,26 +701,29 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       }
     });
 
-    if (flight) initFlight();
-
-    // M7 调试：K 键传送飞船到 5 AU 深空（曲速演示用）
-    window.addEventListener("keydown", (e) => {
-      if (flight && ship && (e.key === "k" || e.key === "K")) {
-        const d5 = 5 * 1.495978707e8; // km
-        const th = 0.9;
-        ship.state = {
-          center: "sun",
-          rel: {
-            r: { x: d5 * Math.cos(th), y: d5 * Math.sin(th), z: 0 },
-            v: { x: -8, y: 14, z: 0 },
-          },
-          jdUTC: warp.jd,
-        };
-      }
-    });
-
     // M4 遮挡感知光斑
     flare = makeFlare(container);
+
+    // M9：帮助覆盖层 / 照片模式 / 存档 / 环境音
+    makeHelpOverlay([
+      ["拖动", "旋转视角"],
+      ["滚轮", "对数缩放"],
+      ["‹ ›", "切换目标天体"],
+      ["P", "照片模式（隐藏/显示 UI）"],
+      ["O", "下载当前画面 PNG"],
+      ["K", "(飞行) 传送飞船至深空"],
+      ["M", "环境音开关"],
+    ]);
+    enablePhotoMode(renderer, [infoDiv]);
+    makeSaveLoad(
+      () => warp.jd,
+      (v: number) => (warp.jd = v),
+      flight ? "solar-odyssey-save-m3" : "solar-odyssey-save-m2",
+    );
+    const audio = makeAmbientAudio();
+    window.addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "m") audio.toggle();
+    });
 
     // ---- 帧循环 ----
   let fpsEma = 60;
@@ -755,7 +759,9 @@ export function startSolarScene(container: HTMLElement, _hud: HTMLElement, fligh
       }
       // 隧道显隐与朝向（ENGAGED 时可见，指向点火方向）
       if (tunnel && warpDrive) {
-        tunnel.visible = warpDrive.phase === "ENGAGED";
+        const engagedNow = warpDrive.phase === "ENGAGED";
+        if (tunnel.visible !== engagedNow) audio.warp(engagedNow);
+        tunnel.visible = engagedNow;
         if (tunnel.visible) {
           // 相机置于运动方向后方，沿速度方向前视（隧道在正前方）
           az = Math.atan2(-warpDrive.dir.z, -warpDrive.dir.x);
