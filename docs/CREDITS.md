@@ -9,6 +9,7 @@
 | `public/textures/earth/blue_marble.jpg` | NASA Blue Marble: Next Generation — Topo-Bathy（NASA Earth Observatory，eoimages.gsfc.nasa.gov/images/imagerecords/73000/73909） | NASA 影像，公有领域（致谢 NASA） |
 | `public/textures/planets/*.jpg`（水金火木土天海月）与 `sky/milky_way.jpg` | Solar System Scope Textures（基于 NASA 影像/高程数据制作），solarsystemscope.com/textures | CC BY 4.0 |
 | `public/textures/planets/saturn_ring_alpha.png` | Solar System Scope Textures | CC BY 4.0 |
+| `public/textures/moon/ldem_3_8bit.jpg` 与 `lroc_color_poles_1k.jpg` | NASA SVS：LRO LOLA 激光测高 8-bit 高度图 + LROC WAC 全球色彩镶嵌（svs.gsfc.nasa.gov/4720） | NASA 影像，公有领域（致谢 NASA） |
 
 ## 星表与轨道数据
 
@@ -30,6 +31,6 @@
 | 用途 | 依据 |
 |---|---|
 | 真实尺度渲染 | Grand Unified Scale / 仿真双精度方法（Outerra、Cesium 公开技术博客）；多天体场景采用相机相对 f32 定位（见 ADR-001） |
-| 大气散射（M5，待实现） | Bruneton & Neyret; Hillaire 预计算透射/多重散射方法 |
+| 大气散射（M5） | Rayleigh + Mie 单次散射 raymarch（16 采样，片元实时计算，见 src/render/atmosphere.ts） |
 | 星历 | VSOP87（Bretagnon & Francou）、ELP2000/Meeus ch.47、Meeus ch.41（冥王星） |
 | 自转模型 | IAU/WGCCRE 2009 报告（Archinal et al. 2011） |

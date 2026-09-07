@@ -7,7 +7,7 @@
 
 ```bash
 npm install
-npm run fetch:textures   # 下载 NASA 公有领域纹理（需网络）
+npm run fetch:textures   # 下载纹理：NASA 公有领域 + Solar System Scope CC BY 4.0（需网络，见 docs/CREDITS.md）
 npm run dev              # http://localhost:5173
 npm test                 # 单元测试
 npm run build            # 类型检查 + 生产构建
@@ -24,7 +24,7 @@ npm run build            # 类型检查 + 生产构建
 | `?m=m6` | 月面着陆行走（阿波罗 11 静海，真实 LOLA 地形，G 看地出） |
 | `?m=m8` | 任务重演：阿波罗 8 / 旅行者 2 / 卡西尼 |
 
-通用键位：拖动旋转 · 滚轮缩放 · ‹› 切换目标 · P 照片模式 · O 下载 PNG · H 帮助 · M 环境音。
+漫游场景（m2/m3/m8）键位：拖动旋转 · 滚轮缩放 · ‹› 切换目标 · P 照片模式 · O 下载 PNG · H 帮助 · M 环境音。
 验收真值门禁：`npm run verify:truth`（IMCCE INPOP）/ `verify:satellites`。
 
 ## 里程碑进度
@@ -48,8 +48,8 @@ src/ephemeris/  星历（M1+）
 src/physics/    轨道力学（M3+）
 src/render/     场景与自定义着色器
 src/terrain/    地形 LOD（M0 起步：GroundPatch）
-src/gameplay/   相机、输入、任务框架（M3+）
-src/ui/         HUD 与界面（M2+）
+src/gameplay/   任务框架（M8）
+src/ui/         HUD 与界面（M1+）
 tools/          数据下载与预处理脚本
 verify/         单元测试与真实数据比对脚本
 docs/           ADR 决策记录、CREDITS
